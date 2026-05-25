@@ -1,0 +1,19 @@
+{
+  "name": "Izolyatsiya Market",
+  "short_name": "Izolyatsiya",
+  "description": "Telegram WebApp uchun izolyatsiya mahsulotlari katalogi.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fffdf8",
+  "theme_color": "#8f0821",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
