@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { categoryCards as defaultCategoryCards, products as defaultProducts } from "./src/data/products.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +45,7 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.VITE_TELEGRAM_CHAT_I
 const DIST_DIR = path.join(__dirname, "dist");
 const STATE_DIR = path.join(__dirname, ".server-state");
 const ORDERS_FILE = path.join(STATE_DIR, "orders.json");
+const CATALOG_FILE = path.join(STATE_DIR, "catalog.json");
 
 if (!existsSync(STATE_DIR)) {
   mkdirSync(STATE_DIR, { recursive: true });
@@ -62,8 +64,47 @@ function readOrders() {
   }
 }
 
+function getDefaultCatalog() {
+  return {
+    categories: defaultCategoryCards.map((category) => ({ ...category })),
+    products: defaultProducts.map((product) => ({ ...product })),
+  };
+}
+
+function readCatalog() {
+  try {
+    if (!existsSync(CATALOG_FILE)) {
+      return getDefaultCatalog();
+    }
+
+    const parsed = JSON.parse(readFileSync(CATALOG_FILE, "utf8"));
+    if (!parsed || !Array.isArray(parsed.categories) || !Array.isArray(parsed.products)) {
+      return getDefaultCatalog();
+    }
+
+    return {
+      categories: parsed.categories.map((category) => ({ ...category })),
+      products: parsed.products.map((product) => ({ ...product })),
+    };
+  } catch {
+    return getDefaultCatalog();
+  }
+}
+
+function getOrderOwnerKey(order) {
+  if (order?.userId === null || order?.userId === undefined || order?.userId === "") {
+    return "browser-preview";
+  }
+
+  return String(order.userId);
+}
+
 function saveOrders(orders) {
   writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2), "utf8");
+}
+
+function saveCatalog(nextCatalog) {
+  writeFileSync(CATALOG_FILE, JSON.stringify(nextCatalog, null, 2), "utf8");
 }
 
 function formatSom(value) {
@@ -160,6 +201,7 @@ async function readBody(req) {
 }
 
 const orders = readOrders();
+let catalog = readCatalog();
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -180,7 +222,41 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/orders" && req.method === "GET") {
-    sendJson(res, 200, { ok: true, orders });
+    const userId = url.searchParams.get("userId");
+    const filteredOrders =
+      userId === null || userId === ""
+        ? orders
+        : orders.filter((order) => getOrderOwnerKey(order) === String(userId));
+
+    sendJson(res, 200, { ok: true, orders: filteredOrders });
+    return;
+  }
+
+  if (url.pathname === "/api/catalog" && req.method === "GET") {
+    sendJson(res, 200, { ok: true, catalog });
+    return;
+  }
+
+  if (url.pathname === "/api/catalog" && req.method === "POST") {
+    try {
+      const body = await readBody(req);
+      const nextCatalog = body.catalog || body;
+
+      if (!nextCatalog || !Array.isArray(nextCatalog.categories) || !Array.isArray(nextCatalog.products)) {
+        sendJson(res, 400, { ok: false, error: "Invalid catalog payload" });
+        return;
+      }
+
+      catalog = {
+        categories: nextCatalog.categories.map((category) => ({ ...category })),
+        products: nextCatalog.products.map((product) => ({ ...product })),
+      };
+
+      saveCatalog(catalog);
+      sendJson(res, 200, { ok: true, catalog });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : "Bad request" });
+    }
     return;
   }
 
@@ -190,7 +266,7 @@ const server = createServer(async (req, res) => {
       const order = {
         id: body.id || `order-${Date.now()}`,
         createdAt: body.createdAt || new Date().toISOString(),
-        userId: body.userId ?? null,
+        userId: body.userId ?? "browser-preview",
         customer: body.customer || {},
         items: Array.isArray(body.items) ? body.items : [],
         total: Number(body.total) || 0,

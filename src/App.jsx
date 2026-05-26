@@ -211,10 +211,38 @@ async function sendOrderToBackend(order) {
   return response.json();
 }
 
+async function fetchOrdersFromBackend(userId = "") {
+  const baseUrl = API_BASE_URL.replace(/\/$/, "");
+  const query = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+  const response = await fetch(`${baseUrl}/api/orders${query}`);
+  const payload = await response.json();
+  return response.ok ? payload.orders ?? [] : [];
+}
+
+async function fetchCatalogFromBackend() {
+  const baseUrl = API_BASE_URL.replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/api/catalog`);
+  const payload = await response.json();
+  return response.ok ? payload.catalog ?? getDefaultCatalog() : getDefaultCatalog();
+}
+
+async function saveCatalogToBackend(catalog) {
+  const baseUrl = API_BASE_URL.replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/api/catalog`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ catalog }),
+  });
+
+  return response.json();
+}
+
 function App() {
   const pathname = usePathname();
   const isAdminRoute = pathname === "/admin" || pathname.startsWith("/admin/");
-  const initialCatalog = readStoredValue(GLOBAL_SCOPE, "catalog", getDefaultCatalog());
+  const initialCatalog = getDefaultCatalog();
   const initialScope = getStorageScope(getTelegramUser());
   const [telegramUser, setTelegramUser] = useState(() => getTelegramUser());
   const [language, setLanguage] = useState("UZB");
@@ -227,13 +255,15 @@ function App() {
   const [locationStatus, setLocationStatus] = useState("");
   const [customer, setCustomer] = useState(() => readStoredValue(initialScope, "customer", DEFAULT_CUSTOMER));
   const [favorites, setFavorites] = useState(() => readStoredValue(initialScope, "favorites", getDefaultFavorites()));
-  const [orderHistory, setOrderHistory] = useState(() => readStoredValue(initialScope, "orders", []));
+  const [orderHistory, setOrderHistory] = useState([]);
+  const [adminOrders, setAdminOrders] = useState([]);
   const [catalog, setCatalog] = useState(() => initialCatalog);
   const [categoryDraft, setCategoryDraft] = useState(() => createCategoryDraft());
   const [productDraft, setProductDraft] = useState(() => createProductDraft(initialCatalog.categories));
   const [adminNotice, setAdminNotice] = useState("");
 
   const storageScope = useMemo(() => getStorageScope(telegramUser), [telegramUser]);
+  const orderOwnerKey = useMemo(() => (telegramUser?.id ? String(telegramUser.id) : storageScope), [telegramUser, storageScope]);
   const { categories: catalogCategories, products: catalogProducts } = catalog;
 
   useEffect(() => {
@@ -251,14 +281,33 @@ function App() {
   }, []);
 
   useEffect(() => {
-    writeStoredValue(GLOBAL_SCOPE, "catalog", catalog);
-  }, [catalog]);
+    let cancelled = false;
+
+    async function loadCatalog() {
+      try {
+        const nextCatalog = await fetchCatalogFromBackend();
+
+        if (!cancelled && nextCatalog) {
+          setCatalog(nextCatalog);
+        }
+      } catch {
+        if (!cancelled) {
+          setCatalog(initialCatalog);
+        }
+      }
+    }
+
+    loadCatalog();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setCart(readStoredValue(storageScope, "cart", {}));
     setCustomer(readStoredValue(storageScope, "customer", DEFAULT_CUSTOMER));
     setFavorites(readStoredValue(storageScope, "favorites", getDefaultFavorites()));
-    setOrderHistory(readStoredValue(storageScope, "orders", []));
   }, [storageScope]);
 
   useEffect(() => {
@@ -274,8 +323,39 @@ function App() {
   }, [favorites, storageScope]);
 
   useEffect(() => {
-    writeStoredValue(storageScope, "orders", orderHistory);
-  }, [orderHistory, storageScope]);
+    let cancelled = false;
+
+    async function loadOrders() {
+      try {
+        if (isAdminRoute) {
+          const nextOrders = await fetchOrdersFromBackend("");
+          if (!cancelled) {
+            setAdminOrders(nextOrders);
+          }
+          return;
+        }
+
+        const nextOrders = await fetchOrdersFromBackend(orderOwnerKey);
+        if (!cancelled) {
+          setOrderHistory(nextOrders);
+        }
+      } catch {
+        if (!cancelled) {
+          if (isAdminRoute) {
+            setAdminOrders([]);
+          } else {
+            setOrderHistory([]);
+          }
+        }
+      }
+    }
+
+    loadOrders();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminRoute, orderOwnerKey]);
 
   useEffect(() => {
     if (catalogCategories.length === 0) {
@@ -345,8 +425,8 @@ function App() {
   const displayedProducts = visibleProducts;
 
   const cartCount = Object.values(cart).reduce((sum, qty) => sum + qty, 0);
-  const totalRevenue = orderHistory.reduce((sum, order) => sum + order.total, 0);
-  const totalItems = orderHistory.reduce(
+  const totalRevenue = adminOrders.reduce((sum, order) => sum + order.total, 0);
+  const totalItems = adminOrders.reduce(
     (sum, order) => sum + order.items.reduce((orderSum, item) => orderSum + item.qty, 0),
     0,
   );
@@ -454,7 +534,7 @@ function App() {
     const order = {
       id: `order-${Date.now()}`,
       createdAt: new Date().toISOString(),
-      userId: telegramUser?.id ?? null,
+      userId: orderOwnerKey,
       customer,
       items: cartItems.map((product) => ({
         id: product.id,
@@ -466,12 +546,17 @@ function App() {
       total: Number(cartTotal.toFixed(2)),
     };
 
-    setOrderHistory((current) => [order, ...current].slice(0, 20));
     setCart({});
     setCheckoutOpen(false);
 
     try {
       const telegramResult = await sendOrderToBackend(order);
+      const savedOrder = telegramResult?.order ?? order;
+
+      setOrderHistory((current) => [savedOrder, ...current].slice(0, 20));
+      if (isAdminRoute) {
+        setAdminOrders((current) => [savedOrder, ...current].slice(0, 100));
+      }
 
       if (telegramResult?.telegramOk) {
         setLocationStatus("Buyurtma botga yuborildi");
@@ -509,7 +594,7 @@ function App() {
     event.target.value = "";
   }
 
-  function addCategory(event) {
+  async function addCategory(event) {
     event.preventDefault();
     const nextCategory = normalizeCategoryInput(categoryDraft);
 
@@ -518,7 +603,8 @@ function App() {
       return;
     }
 
-    setCatalog((current) => {
+    const nextCatalog = (() => {
+      const current = catalog;
       const matchIndex = current.categories.findIndex(
         (category) => category.name.toLowerCase() === nextCategory.name.toLowerCase(),
       );
@@ -536,21 +622,28 @@ function App() {
       }
 
       return { ...current, categories: [...current.categories, nextCategory] };
-    });
+    })();
+
+    setCatalog(nextCatalog);
+    await saveCatalogToBackend(nextCatalog);
 
     setCategoryDraft(createCategoryDraft());
     setAdminNotice("Kategoriya saqlandi");
   }
 
-  function removeCategory(name) {
-    setCatalog((current) => {
+  async function removeCategory(name) {
+    const nextCatalog = (() => {
+      const current = catalog;
       const nextCategories = current.categories.filter((category) => category.name !== name);
       const nextProducts = current.products.filter((product) => product.category !== name);
       return {
         categories: nextCategories,
         products: nextProducts,
       };
-    });
+    })();
+
+    setCatalog(nextCatalog);
+    await saveCatalogToBackend(nextCatalog);
   }
 
   async function handleProductImageChange(event) {
@@ -565,7 +658,7 @@ function App() {
     event.target.value = "";
   }
 
-  function addProduct(event) {
+  async function addProduct(event) {
     event.preventDefault();
     const nextProduct = normalizeProductInput(productDraft);
 
@@ -575,11 +668,13 @@ function App() {
     }
 
     const nextProductId = nextProduct.id;
+    const nextCatalog = {
+      ...catalog,
+      products: [nextProduct, ...catalog.products],
+    };
 
-    setCatalog((current) => ({
-      ...current,
-      products: [nextProduct, ...current.products],
-    }));
+    setCatalog(nextCatalog);
+    await saveCatalogToBackend(nextCatalog);
 
     setFavorites((current) => ({
       ...current,
@@ -590,11 +685,14 @@ function App() {
     setAdminNotice("Product saqlandi");
   }
 
-  function removeProduct(id) {
-    setCatalog((current) => ({
-      ...current,
-      products: current.products.filter((product) => product.id !== id),
-    }));
+  async function removeProduct(id) {
+    const nextCatalog = {
+      ...catalog,
+      products: catalog.products.filter((product) => product.id !== id),
+    };
+
+    setCatalog(nextCatalog);
+    await saveCatalogToBackend(nextCatalog);
     setCart((current) => {
       const next = { ...current };
       delete next[id];
@@ -632,7 +730,7 @@ function App() {
               </div>
               <div className="admin-hero-card">
                 <BarChart3 aria-hidden="true" />
-                <strong>{orderHistory.length}</strong>
+                <strong>{adminOrders.length}</strong>
                 <span>buyurtma</span>
               </div>
             </div>
@@ -863,7 +961,7 @@ function App() {
                   <span>{totalItems} dona</span>
                 </div>
 
-                {orderHistory.length === 0 ? (
+                {adminOrders.length === 0 ? (
                   <div className="empty-admin">
                     <History aria-hidden="true" />
                     <h3>Hali buyurtma yo'q</h3>
@@ -871,7 +969,7 @@ function App() {
                   </div>
                 ) : (
                   <div className="admin-list">
-                    {orderHistory.map((order) => (
+                    {adminOrders.map((order) => (
                       <article className="admin-item" key={order.id}>
                         <div className="admin-item-head">
                           <div>
