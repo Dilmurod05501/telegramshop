@@ -91,7 +91,8 @@ function buildTelegramText(order) {
 
 async function sendTelegramOrder(order) {
   if (!BOT_TOKEN || !CHAT_ID) {
-    return { ok: false, reason: "missing-config" };
+    console.log("[order] missing Telegram config");
+    return { ok: false, reason: "missing-config", description: "Telegram bot token yoki chat id yo'q" };
   }
 
   const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -106,7 +107,19 @@ async function sendTelegramOrder(order) {
     }),
   });
 
-  return response.json();
+  const payload = await response.json();
+  console.log("[telegram] response", JSON.stringify(payload));
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      reason: "telegram-api",
+      description: payload?.description || "Telegram API xatosi",
+      payload,
+    };
+  }
+
+  return payload;
 }
 
 function contentType(filePath) {
@@ -188,9 +201,24 @@ const server = createServer(async (req, res) => {
         orders.pop();
       }
       saveOrders(orders);
+      console.log("[order] received", JSON.stringify(order));
 
       const telegramResult = await sendTelegramOrder(order);
-      sendJson(res, 200, { ok: true, telegramOk: Boolean(telegramResult?.ok), order });
+      console.log(
+        "[order] telegram result",
+        JSON.stringify({
+          ok: Boolean(telegramResult?.ok),
+          reason: telegramResult?.reason || null,
+          description: telegramResult?.description || null,
+        }),
+      );
+      sendJson(res, 200, {
+        ok: true,
+        telegramOk: Boolean(telegramResult?.ok),
+        telegramReason: telegramResult?.reason || null,
+        telegramDescription: telegramResult?.description || null,
+        order,
+      });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : "Bad request" });
     }

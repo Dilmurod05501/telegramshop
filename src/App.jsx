@@ -475,6 +475,10 @@ function App() {
 
       if (telegramResult?.telegramOk) {
         setLocationStatus("Buyurtma botga yuborildi");
+      } else if (telegramResult?.telegramDescription) {
+        setLocationStatus(`Bot xatosi: ${telegramResult.telegramDescription}`);
+      } else if (telegramResult?.telegramReason === "missing-config") {
+        setLocationStatus("Bot sozlamalari backendda yo'q");
       } else {
         setLocationStatus("Buyurtma saqlandi, lekin botga yuborishda muammo bo'ldi");
       }
