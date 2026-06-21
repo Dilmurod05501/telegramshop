@@ -1,18 +1,8 @@
 {
-  "cleanUrls": true,
-  "trailingSlash": false,
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://telegramshop-production.up.railway.app/api/$1"
-    },
-    {
-      "source": "/admin",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/admin/(.*)",
-      "destination": "/index.html"
+      "destination": "https://shop-bot-production-ebff.up.railway.app/api/$1"
     },
     {
       "source": "/(.*)",
